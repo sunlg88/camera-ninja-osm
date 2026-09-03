@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "experimental": true,
+  "notes": [
+    "These are initial Camera Ninja fallback thresholds, not validated safety/legal limits.",
+    "Android integration must keep them centralized and tune them using recorded drive telemetry.",
+    "When evidence is ambiguous, prefer delaying/suppressing an alert over asserting a false road-direction match."
+  ],
+  "trajectory": {
+    "historySeconds": 8,
+    "maxPoints": 10,
+    "maxGpsAccuracyM": 30,
+    "minSpeedKphForDirection": 12,
+    "minDisplacementMForHeading": 12,
+    "approachSamples": 3,
+    "candidatePersistenceSamples": 3
+  },
+  "osmTemporal": {
+    "candidateLimit": 5,
+    "candidateSearchRadiusM": 120,
+    "expandedSearchRadiusM": 250,
+    "highConfidence": 0.8,
+    "lowConfidence": 0.55,
+    "switchMargin": 0.15
+  },
+  "trajectoryCamera": {
+    "maxCandidateDistanceM": 2200,
+    "crossTrackStrongM": 25,
+    "crossTrackMediumM": 45,
+    "crossTrackWeakM": 80,
+    "headingStrongDeg": 25,
+    "headingMediumDeg": 45,
+    "headingRejectDeg": 95,
+    "scoreHigh": 70,
+    "scoreMedium": 50,
+    "weights": {
+      "ahead": 35,
+      "approachTrend": 25,
+      "headingAgreement": 20,
+      "crossTrackAgreement": 20,
+      "locationTextDirection": 15,
+      "cameraClusterAgreement": 10,
+      "distanceIncreasingPenalty": -30,
+      "largeCrossTrackPenalty": -30,
+      "oppositeHeadingPenalty": -25,
+      "poorGpsAccuracyPenalty": -20
+    }
+  },
+  "classicGpsFallback": {
+    "maxHeadingDifferenceDeg": 60,
+    "requireApproachTrend": true,
+    "minimumApproachSamples": 3
+  }
+}
