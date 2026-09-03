@@ -1,0 +1,39 @@
+name: Build Korea OSM Road Snapshot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 18 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install osmium-tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool
+
+      - name: Build nationwide road snapshot
+        run: bash scripts/build_roads.sh
+
+      - name: Show manifest
+        run: cat dist/manifest.json
+
+      - name: Upload road snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: camera-ninja-korea-roads
+          path: |
+            dist/south-korea-roads.osm.pbf
+            dist/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
