@@ -8,8 +8,10 @@ on:
       - 'scripts/match_cameras_unique.py'
       - 'scripts/derive_camera_direction.py'
       - 'scripts/derive_fallback_metadata.py'
+      - 'scripts/derive_reliability_metadata.py'
       - 'scripts/fetch_public_cameras.py'
       - 'config/fallback_matching.json'
+      - 'config/reliability_policy.json'
       - '.github/workflows/build-camera-db.yml'
       - '.github/workflows/check-phase3.yml'
       - 'docs/phase3-camera-matching.md'
@@ -32,14 +34,17 @@ jobs:
             scripts/match_cameras_unique.py \
             scripts/derive_camera_direction.py \
             scripts/derive_fallback_metadata.py \
+            scripts/derive_reliability_metadata.py \
             scripts/fetch_public_cameras.py
-      - name: Validate fallback config JSON
+      - name: Validate config JSON
         run: |
           python3 -m json.tool config/fallback_matching.json >/dev/null
+          python3 -m json.tool config/reliability_policy.json >/dev/null
       - name: Smoke-test CLIs
         run: |
           python3 scripts/match_cameras.py --help >/dev/null
           python3 scripts/match_cameras_unique.py --help >/dev/null
           python3 scripts/derive_camera_direction.py --help >/dev/null
           python3 scripts/derive_fallback_metadata.py --help >/dev/null
+          python3 scripts/derive_reliability_metadata.py --help >/dev/null
           python3 scripts/fetch_public_cameras.py --help >/dev/null
