@@ -59,6 +59,12 @@ jobs:
             dist/camera-ninja-korea-cameras.db \
             --report dist/camera-match-report.json
 
+      - name: Derive conservative travel-direction metadata
+        run: |
+          python3 scripts/derive_camera_direction.py \
+            dist/camera-ninja-korea-cameras.db \
+            --report dist/camera-direction-report.json
+
       - name: Validate output
         run: |
           python3 - <<'PY'
@@ -69,9 +75,18 @@ jobs:
           total=c.execute('select count(*) from cameras').fetchone()[0]
           matched=c.execute('select count(*) from cameras where segment_id is not null').fetchone()[0]
           speed=c.execute("select count(*) from cameras where alert_default=1").fetchone()[0]
+          direction_populated=c.execute('select count(*) from cameras where direction_mode is not null').fetchone()[0]
+          hard_direction=c.execute('select count(*) from cameras where direction_hard_filter=1').fetchone()[0]
           assert total > 40000, total
           assert matched / total > 0.98, (matched,total)
-          print(json.dumps({'total':total,'matched':matched,'defaultSpeedAlerts':speed}, ensure_ascii=False))
+          assert direction_populated == total, (direction_populated,total)
+          print(json.dumps({
+            'total':total,
+            'matched':matched,
+            'defaultSpeedAlerts':speed,
+            'directionRows':direction_populated,
+            'hardDirectionRows':hard_direction,
+          }, ensure_ascii=False))
           PY
 
       - name: Compress camera DB
@@ -87,6 +102,7 @@ jobs:
           path: |
             dist/camera-ninja-korea-cameras.db.zst
             dist/camera-match-report.json
+            dist/camera-direction-report.json
             dist/CAMERA_SHA256SUMS
           if-no-files-found: error
           compression-level: 0
