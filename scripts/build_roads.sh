@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Initial nationwide snapshot build entrypoint.
 SOURCE_URL="${SOURCE_URL:-https://download.geofabrik.de/asia/south-korea-latest.osm.pbf}"
 MD5_URL="${MD5_URL:-https://download.geofabrik.de/asia/south-korea-latest.osm.pbf.md5}"
 WORK_DIR="${WORK_DIR:-work}"
