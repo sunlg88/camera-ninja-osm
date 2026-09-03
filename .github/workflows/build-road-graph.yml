@@ -1,4 +1,4 @@
-name: Build Korea Camera Ninja Road Graph
+name: Build Korea Camera Ninja Compact Road Graph
 
 on:
   workflow_dispatch:
@@ -6,8 +6,8 @@ on:
     branches: [phase2-road-graph]
     paths:
       - '.github/workflows/build-road-graph.yml'
-      - 'scripts/build_graph.py'
-      - 'scripts/validate_graph.py'
+      - 'scripts/build_compact_graph.py'
+      - 'scripts/validate_compact_graph.py'
       - 'config/vehicle_access.json'
 
 permissions:
@@ -17,7 +17,7 @@ env:
   SOURCE_URL: https://download.geofabrik.de/asia/south-korea-latest.osm.pbf
 
 jobs:
-  build-graph:
+  build-compact-graph:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -27,7 +27,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y osmium-tool sqlite3
+          sudo apt-get install -y osmium-tool sqlite3 zstd
+          python3 -m pip install --disable-pip-version-check osmium
 
       - name: Download latest South Korea OSM
         run: |
@@ -42,33 +43,42 @@ jobs:
             work/south-korea-latest.osm.pbf \
             w/highway
           osmium check-refs work/south-korea-roads.osm.pbf
+          ls -lh work/south-korea-roads.osm.pbf
 
-      - name: Build Camera Ninja road graph
+      - name: Build compact Camera Ninja road graph
         run: |
-          python3 scripts/build_graph.py \
+          python3 scripts/build_compact_graph.py \
             work/south-korea-roads.osm.pbf \
             config/vehicle_access.json \
-            dist/camera-ninja-korea-roads.db
+            dist/camera-ninja-korea-roads-compact.db \
+            | tee dist/compact-build.json
 
-      - name: Validate SQLite graph and R-tree
+      - name: Validate compact SQLite graph and R-tree
         run: |
-          python3 scripts/validate_graph.py dist/camera-ninja-korea-roads.db | tee dist/graph-validation.json
+          python3 scripts/validate_compact_graph.py \
+            dist/camera-ninja-korea-roads-compact.db \
+            | tee dist/compact-validation.json
 
-      - name: Compress graph DB
+      - name: Compress compact graph DB
         run: |
-          gzip -9 -c dist/camera-ninja-korea-roads.db > dist/camera-ninja-korea-roads.db.gz
-          sha256sum dist/camera-ninja-korea-roads.db dist/camera-ninja-korea-roads.db.gz > dist/SHA256SUMS
+          zstd -19 -T0 \
+            dist/camera-ninja-korea-roads-compact.db \
+            -o dist/camera-ninja-korea-roads-compact.db.zst
+          sha256sum \
+            dist/camera-ninja-korea-roads-compact.db \
+            dist/camera-ninja-korea-roads-compact.db.zst \
+            > dist/SHA256SUMS
           ls -lh dist/
 
-      - name: Upload graph artifact
+      - name: Upload compact graph artifact
         uses: actions/upload-artifact@v4
         with:
-          name: camera-ninja-korea-road-graph
+          name: camera-ninja-korea-compact-road-graph
           path: |
-            dist/camera-ninja-korea-roads.db
-            dist/camera-ninja-korea-roads.db.gz
-            dist/graph-validation.json
+            dist/camera-ninja-korea-roads-compact.db.zst
+            dist/compact-build.json
+            dist/compact-validation.json
             dist/SHA256SUMS
           if-no-files-found: error
           compression-level: 0
-          retention-days: 7
+          retention-days: 1
