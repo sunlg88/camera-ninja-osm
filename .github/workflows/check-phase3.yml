@@ -5,9 +5,13 @@ on:
     branches: [phase3-camera-matching]
     paths:
       - 'scripts/match_cameras.py'
+      - 'scripts/match_cameras_unique.py'
+      - 'scripts/derive_camera_direction.py'
       - 'scripts/fetch_public_cameras.py'
       - '.github/workflows/build-camera-db.yml'
+      - '.github/workflows/check-phase3.yml'
       - 'docs/phase3-camera-matching.md'
+      - 'docs/android-integration-contract.md'
 
 permissions:
   contents: read
@@ -20,8 +24,14 @@ jobs:
         uses: actions/checkout@v4
       - name: Compile Python scripts
         run: |
-          python3 -m py_compile scripts/match_cameras.py scripts/fetch_public_cameras.py
-      - name: Smoke-test camera matcher CLI
+          python3 -m py_compile \
+            scripts/match_cameras.py \
+            scripts/match_cameras_unique.py \
+            scripts/derive_camera_direction.py \
+            scripts/fetch_public_cameras.py
+      - name: Smoke-test CLIs
         run: |
           python3 scripts/match_cameras.py --help >/dev/null
+          python3 scripts/match_cameras_unique.py --help >/dev/null
+          python3 scripts/derive_camera_direction.py --help >/dev/null
           python3 scripts/fetch_public_cameras.py --help >/dev/null
