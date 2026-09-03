@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "objective": "Minimize speed-camera false negatives. Prefer a tolerable extra alert over silently missing a plausible speed camera.",
+  "buildGates": {
+    "sourceRecordRetention": 1.0,
+    "speedCameraRetention": 1.0,
+    "validCoordinateSpeedEligibility": 1.0,
+    "allowOsmFailureToSuppressSpeedCamera": false,
+    "allowLowConfidenceDirectionToHardSuppress": false
+  },
+  "coordinateSanity": {
+    "koreaBoundingBox": {
+      "minLat": 32.5,
+      "maxLat": 39.7,
+      "minLon": 123.5,
+      "maxLon": 132.0
+    },
+    "adminOutlierMinimumGroupSize": 20,
+    "adminOutlierMinimumDistanceMeters": 60000,
+    "adminOutlierP95Multiplier": 2.5,
+    "adminOutlierPolicy": "flag_only_do_not_suppress"
+  },
+  "physicalClustering": {
+    "radiusMeters": 10.0,
+    "policy": "cluster_for_duplicate-audio control only; preserve every source record and evaluate member direction before de-duplication"
+  },
+  "runtimeFailSafe": {
+    "ambiguousRoadMatch": "continue temporal tracking then fallback; never discard solely because OSM confidence is low",
+    "ambiguousDirection": "do not hard-filter unless direction_hard_filter=1; otherwise use live trajectory and soft evidence",
+    "osmMissing": "keep speed camera eligible for trajectory fallback",
+    "suspiciousButKoreaCoordinate": "keep eligible and mark suspicious",
+    "outsideKoreaCoordinate": "quarantine from automatic alert and surface in build report"
+  },
+  "validationPrinciple": "A production candidate must explain every source speed camera: road-primary, fallback-required, or quarantined for objectively invalid coordinates. No silent drops."
+}
