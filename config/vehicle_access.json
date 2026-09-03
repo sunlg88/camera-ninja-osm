@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "description": "Camera Ninja road matching keeps every highway=* way in the DB. This file only marks whether an edge is a plausible motor-vehicle road for default matching.",
+  "nonVehicleHighwayValues": [
+    "footway",
+    "steps",
+    "cycleway",
+    "bridleway",
+    "pedestrian",
+    "path",
+    "platform",
+    "corridor",
+    "elevator",
+    "via_ferrata",
+    "proposed",
+    "construction",
+    "abandoned"
+  ],
+  "explicitMotorVehicleAllow": [
+    "yes",
+    "designated",
+    "permissive",
+    "destination",
+    "customers",
+    "delivery",
+    "agricultural",
+    "forestry"
+  ],
+  "explicitMotorVehicleDeny": [
+    "no"
+  ],
+  "notes": [
+    "service, residential, living_street, unclassified, road and track are retained as plausible motor-vehicle roads unless an explicit motor_vehicle/motorcar=no overrides them.",
+    "access=private is not treated as physically non-drivable because Camera Ninja performs observation/map matching rather than legal route guidance.",
+    "All excluded/non-drivable highway ways are still stored in the road database with drivable=0 for diagnostics and future policy changes."
+  ]
+}
