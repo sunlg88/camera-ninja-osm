@@ -17,6 +17,7 @@ on:
       - 'docs/phase3-camera-matching.md'
       - 'docs/android-integration-contract.md'
       - 'docs/fallback-matching-plan.md'
+      - 'docs/CODEX_CAMERA_NINJA_V2_IMPLEMENTATION_SPEC.md'
 
 permissions:
   contents: read
