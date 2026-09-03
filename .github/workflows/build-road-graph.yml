@@ -1,0 +1,74 @@
+name: Build Korea Camera Ninja Road Graph
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [phase2-road-graph]
+    paths:
+      - '.github/workflows/build-road-graph.yml'
+      - 'scripts/build_graph.py'
+      - 'scripts/validate_graph.py'
+      - 'config/vehicle_access.json'
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_URL: https://download.geofabrik.de/asia/south-korea-latest.osm.pbf
+
+jobs:
+  build-graph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool sqlite3
+
+      - name: Download latest South Korea OSM
+        run: |
+          mkdir -p work dist
+          curl -fL --retry 3 --retry-delay 5 "$SOURCE_URL" -o work/south-korea-latest.osm.pbf
+
+      - name: Extract all highway ways
+        run: |
+          osmium tags-filter \
+            --overwrite \
+            -o work/south-korea-roads.osm.pbf \
+            work/south-korea-latest.osm.pbf \
+            w/highway
+          osmium check-refs work/south-korea-roads.osm.pbf
+
+      - name: Build Camera Ninja road graph
+        run: |
+          python3 scripts/build_graph.py \
+            work/south-korea-roads.osm.pbf \
+            config/vehicle_access.json \
+            dist/camera-ninja-korea-roads.db
+
+      - name: Validate SQLite graph and R-tree
+        run: |
+          python3 scripts/validate_graph.py dist/camera-ninja-korea-roads.db | tee dist/graph-validation.json
+
+      - name: Compress graph DB
+        run: |
+          gzip -9 -c dist/camera-ninja-korea-roads.db > dist/camera-ninja-korea-roads.db.gz
+          sha256sum dist/camera-ninja-korea-roads.db dist/camera-ninja-korea-roads.db.gz > dist/SHA256SUMS
+          ls -lh dist/
+
+      - name: Upload graph artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: camera-ninja-korea-road-graph
+          path: |
+            dist/camera-ninja-korea-roads.db
+            dist/camera-ninja-korea-roads.db.gz
+            dist/graph-validation.json
+            dist/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
