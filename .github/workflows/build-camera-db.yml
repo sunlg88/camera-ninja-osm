@@ -71,6 +71,14 @@ jobs:
             dist/camera-ninja-korea-cameras.db \
             --report dist/camera-fallback-metadata-report.json
 
+      - name: Enforce reliability metadata and zero-loss gates
+        run: |
+          python3 scripts/derive_reliability_metadata.py \
+            dist/camera-ninja-korea-cameras.db \
+            work/cameras.json \
+            config/reliability_policy.json \
+            --report dist/camera-reliability-report.json
+
       - name: Validate output
         run: |
           python3 - <<'PY'
@@ -85,6 +93,9 @@ jobs:
           hard_direction=c.execute('select count(*) from cameras where direction_hard_filter=1').fetchone()[0]
           hint_count=c.execute('select count(*) from cameras where location_from_hint is not null and location_to_hint is not null').fetchone()[0]
           paired_count=c.execute('select count(*) from cameras where opposite_camera_id is not null').fetchone()[0]
+          eligible_speed=c.execute('select count(*) from cameras where alert_default=1 and runtime_alert_eligible=1').fetchone()[0]
+          osm_failed_speed=c.execute('select count(*) from cameras where alert_default=1 and runtime_alert_eligible=1 and segment_id is null').fetchone()[0]
+          outside_korea=c.execute("select count(*) from cameras where coordinate_quality='OUTSIDE_KOREA_BBOX'").fetchone()[0]
           assert total > 40000, total
           assert matched / total > 0.98, (matched,total)
           assert direction_populated == total, (direction_populated,total)
@@ -93,6 +104,9 @@ jobs:
             'total':total,
             'matched':matched,
             'defaultSpeedAlerts':speed,
+            'eligibleSpeedAlerts':eligible_speed,
+            'osmFailedButFallbackEligibleSpeed':osm_failed_speed,
+            'outsideKoreaQuarantined':outside_korea,
             'directionRows':direction_populated,
             'hardDirectionRows':hard_direction,
             'locationArrowHints':hint_count,
@@ -115,6 +129,7 @@ jobs:
             dist/camera-match-report.json
             dist/camera-direction-report.json
             dist/camera-fallback-metadata-report.json
+            dist/camera-reliability-report.json
             dist/CAMERA_SHA256SUMS
           if-no-files-found: error
           compression-level: 0
