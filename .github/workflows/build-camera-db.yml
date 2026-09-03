@@ -53,7 +53,7 @@ jobs:
 
       - name: Match cameras to OSM road segments
         run: |
-          python3 scripts/match_cameras.py \
+          python3 scripts/match_cameras_unique.py \
             work/camera-ninja-korea-roads-compact.db \
             work/cameras.json \
             dist/camera-ninja-korea-cameras.db \
