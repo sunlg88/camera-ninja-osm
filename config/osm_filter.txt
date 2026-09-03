@@ -1,0 +1,8 @@
+# Camera Ninja OSM extraction rules
+# Keep all OSM ways tagged highway=* (not only motorways).
+# Keep road restriction and road-route relations as supporting topology metadata.
+# Referenced nodes/members are pulled in by the extraction script.
+
+w/highway
+r/type=restriction
+r/route=road
