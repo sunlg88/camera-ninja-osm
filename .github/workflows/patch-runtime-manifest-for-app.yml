@@ -1,0 +1,197 @@
+name: Patch Runtime Manifest for Camera Ninja V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-runtime-manifest-for-app.yml'
+  workflow_run:
+    workflows: ['Publish Camera Ninja Runtime Release']
+    types: [completed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: camera-ninja-runtime-manifest-patch
+  cancel-in-progress: false
+
+jobs:
+  patch-latest-runtime-manifest:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Resolve latest runtime release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
+          if [[ ! "$TAG" =~ ^runtime-[A-Za-z0-9._-]+$ ]]; then
+            echo "Unexpected latest release tag: $TAG" >&2
+            exit 1
+          fi
+          echo "RUNTIME_TAG=$TAG" >> "$GITHUB_ENV"
+          mkdir -p work
+          echo "Patching release: $TAG"
+
+      - name: Download existing manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$RUNTIME_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern runtime-manifest.json \
+            --dir work
+
+      - name: Convert manifest to Camera Ninja V2 contract
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path('work/runtime-manifest.json')
+          src = json.loads(path.read_text(encoding='utf-8'))
+          tag = os.environ['RUNTIME_TAG']
+
+          # Camera Ninja V2 RuntimeManifestParser contract:
+          # schemaVersion, snapshotId, roadSchemaVersion, cameraSchemaVersion,
+          # sourceCameraCount, sourceSpeedCameraCount, roads, cameras.
+          # RuntimeArtifact contract: url, sha256, bytes, compression.
+          if {'schemaVersion','snapshotId','roadSchemaVersion','cameraSchemaVersion',
+              'sourceCameraCount','sourceSpeedCameraCount','roads','cameras'} <= set(src):
+              out = src
+          else:
+              road = src['road']
+              camera = src['camera']
+              out = {
+                  'schemaVersion': 1,
+                  'snapshotId': src.get('dataVersion', tag),
+                  'roadSchemaVersion': int(road['schemaVersion']),
+                  'cameraSchemaVersion': int(camera['schemaVersion']),
+                  'sourceCameraCount': int(camera['recordCount']),
+                  'sourceSpeedCameraCount': int(camera['speedRelevantRecordCount']),
+                  'roads': {
+                      'url': road['url'],
+                      'sha256': road['sha256'].lower(),
+                      'bytes': int(road['compressedBytes']),
+                      'compression': 'zstd'
+                  },
+                  'cameras': {
+                      'url': camera['url'],
+                      'sha256': camera['sha256'].lower(),
+                      'bytes': int(camera['compressedBytes']),
+                      'compression': 'zstd'
+                  }
+              }
+
+          if out['schemaVersion'] != 1:
+              raise SystemExit('manifest schemaVersion must be 1')
+          if not re.fullmatch(r'[A-Za-z0-9._-]{1,100}', out['snapshotId']):
+              raise SystemExit('snapshotId does not satisfy app parser')
+          if out['snapshotId'] != tag:
+              raise SystemExit(f"snapshotId/tag mismatch: {out['snapshotId']} != {tag}")
+          if out['roadSchemaVersion'] != 3:
+              raise SystemExit(f"unsupported roadSchemaVersion: {out['roadSchemaVersion']}")
+          if out['cameraSchemaVersion'] != 1:
+              raise SystemExit(f"unsupported cameraSchemaVersion: {out['cameraSchemaVersion']}")
+          if out['sourceCameraCount'] < 40000:
+              raise SystemExit('sourceCameraCount unexpectedly small')
+          if out['sourceSpeedCameraCount'] < 10000:
+              raise SystemExit('sourceSpeedCameraCount unexpectedly small')
+
+          for key in ('roads','cameras'):
+              art = out[key]
+              if not str(art['url']).startswith('https://'):
+                  raise SystemExit(f'{key} URL must be HTTPS')
+              if not re.fullmatch(r'[0-9a-f]{64}', str(art['sha256'])):
+                  raise SystemExit(f'{key} SHA-256 invalid')
+              if int(art['bytes']) <= 0:
+                  raise SystemExit(f'{key} byte count invalid')
+              if art.get('compression') != 'zstd':
+                  raise SystemExit(f'{key} compression must be zstd')
+
+          path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(out, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Rebuild release checksums without redownloading databases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_JSON="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RUNTIME_TAG")"
+          ROAD_NAME='camera-ninja-korea-roads-compact.db.zst'
+          CAMERA_NAME='camera-ninja-korea-cameras.db.zst'
+
+          ROAD_SHA="$(printf '%s' "$RELEASE_JSON" | jq -r --arg n "$ROAD_NAME" '.assets[] | select(.name==$n) | .digest' | sed 's/^sha256://')"
+          CAMERA_SHA="$(printf '%s' "$RELEASE_JSON" | jq -r --arg n "$CAMERA_NAME" '.assets[] | select(.name==$n) | .digest' | sed 's/^sha256://')"
+          MANIFEST_SHA="$(sha256sum work/runtime-manifest.json | awk '{print $1}')"
+
+          [[ "$ROAD_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$CAMERA_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$MANIFEST_SHA" =~ ^[0-9a-f]{64}$ ]]
+
+          printf '%s  %s\n%s  %s\n%s  %s\n' \
+            "$ROAD_SHA" "$ROAD_NAME" \
+            "$CAMERA_SHA" "$CAMERA_NAME" \
+            "$MANIFEST_SHA" 'runtime-manifest.json' \
+            > work/SHA256SUMS
+
+      - name: Replace manifest and checksum assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RUNTIME_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            work/runtime-manifest.json \
+            work/SHA256SUMS
+
+      - name: Verify public latest manifest against app parser contract
+        run: |
+          curl -fL --retry 5 --retry-delay 2 \
+            "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/runtime-manifest.json" \
+            -o work/published-runtime-manifest.json
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+
+          m = json.load(open('work/published-runtime-manifest.json', encoding='utf-8'))
+          required = {
+              'schemaVersion','snapshotId','roadSchemaVersion','cameraSchemaVersion',
+              'sourceCameraCount','sourceSpeedCameraCount','roads','cameras'
+          }
+          missing = sorted(required - set(m))
+          if missing:
+              raise SystemExit(f'manifest missing app-required keys: {missing}')
+          if m['schemaVersion'] != 1:
+              raise SystemExit('schemaVersion mismatch')
+          if m['snapshotId'] != os.environ['RUNTIME_TAG']:
+              raise SystemExit('snapshotId mismatch')
+          if not re.fullmatch(r'[A-Za-z0-9._-]{1,100}', m['snapshotId']):
+              raise SystemExit('snapshotId format mismatch')
+          for key in ('roads','cameras'):
+              a=m[key]
+              if not a['url'].startswith('https://'):
+                  raise SystemExit(f'{key}: non-HTTPS URL')
+              if not re.fullmatch(r'[0-9a-f]{64}', a['sha256']):
+                  raise SystemExit(f'{key}: bad SHA-256')
+              if int(a['bytes']) <= 0:
+                  raise SystemExit(f'{key}: invalid bytes')
+              if a.get('compression') != 'zstd':
+                  raise SystemExit(f'{key}: invalid compression')
+          print(json.dumps({
+              'status': 'PASS',
+              'snapshotId': m['snapshotId'],
+              'sourceCameraCount': m['sourceCameraCount'],
+              'sourceSpeedCameraCount': m['sourceSpeedCameraCount'],
+              'roadBytes': m['roads']['bytes'],
+              'cameraBytes': m['cameras']['bytes']
+          }, ensure_ascii=False, indent=2))
+          PY
