@@ -2,7 +2,10 @@
 import argparse
 import json
 import os
+import socket
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -34,25 +37,45 @@ FIELD_MAP = {
 }
 
 
-def fetch_page(service_key, page, rows):
+def fetch_page(service_key, page, rows, attempts=6, timeout_s=45):
     query = urllib.parse.urlencode({
         "serviceKey": service_key,
         "pageNo": page,
         "numOfRows": rows,
         "type": "json",
     })
-    with urllib.request.urlopen(API_URL + "?" + query, timeout=60) as response:
-        payload = json.load(response)
-    wrapped = payload.get("response", payload)
-    header = wrapped.get("header", {})
-    code = str(header.get("resultCode", "00"))
-    if code not in {"00", "0", "NORMAL_CODE"}:
-        raise RuntimeError(f"data.go.kr error {code}: {header.get('resultMsg')}")
-    body = wrapped.get("body", wrapped)
-    items = body.get("items", body.get("data", []))
-    if isinstance(items, dict):
-        items = items.get("item", [])
-    return items or [], int(body.get("totalCount", len(items or [])))
+    url = API_URL + "?" + query
+    last_error = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Camera-Ninja-CI/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout_s) as response:
+                payload = json.load(response)
+
+            wrapped = payload.get("response", payload)
+            header = wrapped.get("header", {})
+            code = str(header.get("resultCode", "00"))
+            if code not in {"00", "0", "NORMAL_CODE"}:
+                raise RuntimeError(f"data.go.kr error {code}: {header.get('resultMsg')}")
+            body = wrapped.get("body", wrapped)
+            items = body.get("items", body.get("data", []))
+            if isinstance(items, dict):
+                items = items.get("item", [])
+            return items or [], int(body.get("totalCount", len(items or [])))
+        except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionResetError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            delay = min(5 * (2 ** (attempt - 1)), 40)
+            print(
+                f"page {page} fetch failed (attempt {attempt}/{attempts}): {exc}; retrying in {delay}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+
+    raise RuntimeError(f"page {page} failed after {attempts} attempts: {last_error}")
 
 
 def main():
