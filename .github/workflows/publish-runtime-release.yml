@@ -1,0 +1,347 @@
+name: Publish Camera Ninja Runtime Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-runtime-release.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: camera-ninja-runtime-release
+  cancel-in-progress: false
+
+env:
+  PIPELINE_REF: phase3-camera-matching
+  OSM_SOURCE_URL: https://download.geofabrik.de/asia/south-korea-latest.osm.pbf
+  ROAD_DB_NAME: camera-ninja-korea-roads-compact.db
+  CAMERA_DB_NAME: camera-ninja-korea-cameras.db
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout Phase 3 runtime pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PIPELINE_REF }}
+          fetch-depth: 1
+
+      - name: Capture pipeline commit
+        run: |
+          echo "PIPELINE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool sqlite3 zstd python3-venv
+          python3 -m venv .venv
+          .venv/bin/pip install --disable-pip-version-check --upgrade pip
+          .venv/bin/pip install --disable-pip-version-check osmium
+
+      - name: Normalize data.go.kr service key
+        env:
+          RAW_SERVICE_KEY: ${{ secrets.DATA_GO_KR_SERVICE_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import urllib.parse
+
+          raw = os.environ.get('RAW_SERVICE_KEY', '').strip()
+          if not raw:
+              raise SystemExit('DATA_GO_KR_SERVICE_KEY secret is missing or empty')
+
+          # Current data.go.kr UI may expose one URL-encoded key. Decode percent
+          # escapes exactly once; literal '+' remains '+' because unquote(), not
+          # unquote_plus(), is used. fetch_public_cameras.py then URL-encodes once.
+          key = urllib.parse.unquote(raw)
+          print('::add-mask::' + key)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as f:
+              f.write('DATA_GO_KR_SERVICE_KEY=' + key + '\n')
+          PY
+
+      - name: Prepare runtime version
+        run: |
+          VERSION="runtime-$(date -u +%Y%m%d-%H%M)-${GITHUB_RUN_NUMBER}"
+          GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "RUNTIME_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "GENERATED_AT=$GENERATED_AT" >> "$GITHUB_ENV"
+          mkdir -p work dist
+          echo "Runtime version: $VERSION"
+
+      - name: Download latest South Korea OSM
+        run: |
+          curl -fL --retry 3 --retry-delay 5 \
+            "$OSM_SOURCE_URL" \
+            -o work/south-korea-latest.osm.pbf
+          ls -lh work/south-korea-latest.osm.pbf
+
+      - name: Record OSM source metadata
+        run: |
+          osmium fileinfo -e work/south-korea-latest.osm.pbf > dist/osm-source-fileinfo.txt
+          sha256sum work/south-korea-latest.osm.pbf > dist/osm-source-sha256.txt
+
+      - name: Extract all highway ways
+        run: |
+          osmium tags-filter \
+            --overwrite \
+            -o work/south-korea-roads.osm.pbf \
+            work/south-korea-latest.osm.pbf \
+            w/highway
+          osmium check-refs work/south-korea-roads.osm.pbf
+          ls -lh work/south-korea-roads.osm.pbf
+
+      - name: Build compact nationwide road database
+        run: |
+          .venv/bin/python scripts/build_compact_graph.py \
+            work/south-korea-roads.osm.pbf \
+            config/vehicle_access.json \
+            "work/$ROAD_DB_NAME" \
+            | tee dist/compact-build.json
+
+      - name: Validate road database
+        run: |
+          .venv/bin/python scripts/validate_compact_graph.py \
+            "work/$ROAD_DB_NAME" \
+            | tee dist/compact-validation.json
+
+      - name: Fetch nationwide public camera data
+        run: |
+          .venv/bin/python scripts/fetch_public_cameras.py work/cameras.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('work/cameras.json', encoding='utf-8'))
+          records=data.get('records', data if isinstance(data, list) else [])
+          if len(records) < 40000:
+              raise SystemExit(f'camera source record count too small: {len(records)}')
+          print(json.dumps({'sourceCameraRecords': len(records)}, ensure_ascii=False))
+          PY
+
+      - name: Match cameras to road segments
+        run: |
+          .venv/bin/python scripts/match_cameras_unique.py \
+            "work/$ROAD_DB_NAME" \
+            work/cameras.json \
+            "work/$CAMERA_DB_NAME" \
+            --report dist/camera-match-report.json
+
+      - name: Derive camera direction metadata
+        run: |
+          .venv/bin/python scripts/derive_camera_direction.py \
+            "work/$CAMERA_DB_NAME" \
+            --report dist/camera-direction-report.json
+
+      - name: Derive fallback metadata
+        run: |
+          .venv/bin/python scripts/derive_fallback_metadata.py \
+            "work/$CAMERA_DB_NAME" \
+            --report dist/camera-fallback-metadata-report.json
+
+      - name: Enforce zero-loss reliability policy
+        run: |
+          .venv/bin/python scripts/derive_reliability_metadata.py \
+            "work/$CAMERA_DB_NAME" \
+            work/cameras.json \
+            config/reliability_policy.json \
+            --report dist/camera-reliability-report.json
+
+      - name: Stamp matched runtime version into both databases
+        run: |
+          sqlite3 "work/$ROAD_DB_NAME" \
+            "INSERT OR REPLACE INTO metadata(key,value) VALUES('runtimeDataVersion','$RUNTIME_VERSION');"
+          sqlite3 "work/$ROAD_DB_NAME" \
+            "INSERT OR REPLACE INTO metadata(key,value) VALUES('runtimeGeneratedAt','$GENERATED_AT');"
+          sqlite3 "work/$CAMERA_DB_NAME" \
+            "INSERT OR REPLACE INTO camera_metadata(key,value) VALUES('runtimeDataVersion','$RUNTIME_VERSION');"
+          sqlite3 "work/$CAMERA_DB_NAME" \
+            "INSERT OR REPLACE INTO camera_metadata(key,value) VALUES('runtimeGeneratedAt','$GENERATED_AT');"
+
+      - name: Final paired database validation
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sqlite3
+
+          road_path=os.path.join('work', os.environ['ROAD_DB_NAME'])
+          cam_path=os.path.join('work', os.environ['CAMERA_DB_NAME'])
+          version=os.environ['RUNTIME_VERSION']
+
+          road=sqlite3.connect(road_path)
+          cam=sqlite3.connect(cam_path)
+
+          assert road.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+          assert cam.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+
+          road_version=road.execute("SELECT value FROM metadata WHERE key='runtimeDataVersion'").fetchone()[0]
+          cam_version=cam.execute("SELECT value FROM camera_metadata WHERE key='runtimeDataVersion'").fetchone()[0]
+          assert road_version == version == cam_version
+
+          segments=road.execute('SELECT COUNT(*) FROM segments').fetchone()[0]
+          rtree=road.execute('SELECT COUNT(*) FROM segment_rtree').fetchone()[0]
+          cameras=cam.execute('SELECT COUNT(*) FROM cameras').fetchone()[0]
+          speed=cam.execute('SELECT COUNT(*) FROM cameras WHERE alert_default=1').fetchone()[0]
+          eligible_speed=cam.execute('SELECT COUNT(*) FROM cameras WHERE alert_default=1 AND runtime_alert_eligible=1').fetchone()[0]
+
+          assert segments > 500000, segments
+          assert rtree == segments, (rtree, segments)
+          assert cameras > 40000, cameras
+          assert speed > 10000, speed
+          assert eligible_speed > 10000, eligible_speed
+
+          summary={
+              'runtimeDataVersion': version,
+              'segments': segments,
+              'rtreeRows': rtree,
+              'cameraRecords': cameras,
+              'speedRelevantRecords': speed,
+              'runtimeEligibleSpeedRecords': eligible_speed,
+              'roadIntegrity': 'ok',
+              'cameraIntegrity': 'ok',
+              'status': 'PASS'
+          }
+          with open('dist/runtime-validation.json','w',encoding='utf-8') as f:
+              json.dump(summary,f,ensure_ascii=False,indent=2)
+          print(json.dumps(summary,ensure_ascii=False,indent=2))
+          road.close(); cam.close()
+          PY
+
+      - name: Compress runtime databases
+        run: |
+          zstd -19 -T0 "work/$ROAD_DB_NAME" -o "dist/$ROAD_DB_NAME.zst"
+          zstd -19 -T0 "work/$CAMERA_DB_NAME" -o "dist/$CAMERA_DB_NAME.zst"
+          ls -lh "dist/$ROAD_DB_NAME.zst" "dist/$CAMERA_DB_NAME.zst"
+
+      - name: Generate release manifest and checksums
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          repo=os.environ['REPOSITORY']
+          version=os.environ['RUNTIME_VERSION']
+          generated=os.environ['GENERATED_AT']
+          road_name=os.environ['ROAD_DB_NAME']
+          camera_name=os.environ['CAMERA_DB_NAME']
+          road_raw=Path('work')/road_name
+          cam_raw=Path('work')/camera_name
+          road_zst=Path('dist')/(road_name+'.zst')
+          cam_zst=Path('dist')/(camera_name+'.zst')
+
+          def sha256(path):
+              h=hashlib.sha256()
+              with open(path,'rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          road=sqlite3.connect(road_raw)
+          camera=sqlite3.connect(cam_raw)
+          road_schema=int(road.execute("SELECT value FROM metadata WHERE key='schemaVersion'").fetchone()[0])
+          camera_schema=int(camera.execute("SELECT value FROM camera_metadata WHERE key='schemaVersion'").fetchone()[0])
+          camera_count=camera.execute('SELECT COUNT(*) FROM cameras').fetchone()[0]
+          speed_count=camera.execute('SELECT COUNT(*) FROM cameras WHERE alert_default=1').fetchone()[0]
+          road.close(); camera.close()
+
+          base=f'https://github.com/{repo}/releases/download/{version}'
+          manifest={
+              'manifestVersion': 1,
+              'dataVersion': version,
+              'generatedAt': generated,
+              'pipelineRef': os.environ['PIPELINE_REF'],
+              'pipelineCommit': os.environ['PIPELINE_COMMIT'],
+              'road': {
+                  'schemaVersion': road_schema,
+                  'fileName': road_zst.name,
+                  'url': f'{base}/{road_zst.name}',
+                  'sha256': sha256(road_zst),
+                  'compressedBytes': road_zst.stat().st_size,
+                  'uncompressedBytes': road_raw.stat().st_size
+              },
+              'camera': {
+                  'schemaVersion': camera_schema,
+                  'fileName': cam_zst.name,
+                  'url': f'{base}/{cam_zst.name}',
+                  'sha256': sha256(cam_zst),
+                  'compressedBytes': cam_zst.stat().st_size,
+                  'uncompressedBytes': cam_raw.stat().st_size,
+                  'recordCount': camera_count,
+                  'speedRelevantRecordCount': speed_count
+              }
+          }
+          Path('dist/runtime-manifest.json').write_text(
+              json.dumps(manifest,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          print(json.dumps(manifest,ensure_ascii=False,indent=2))
+          PY
+
+          (
+            cd dist
+            sha256sum \
+              "$ROAD_DB_NAME.zst" \
+              "$CAMERA_DB_NAME.zst" \
+              runtime-manifest.json \
+              > SHA256SUMS
+          )
+
+      - name: Create GitHub Runtime Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > dist/RELEASE_NOTES.md <<EOF
+          Camera Ninja nationwide runtime data release.
+
+          - Runtime data version: $RUNTIME_VERSION
+          - Pipeline ref: $PIPELINE_REF
+          - Pipeline commit: $PIPELINE_COMMIT
+          - Generated at: $GENERATED_AT
+          - Road and camera databases were built as one matched snapshot pair.
+          - Camera build passed zero-loss speed-camera reliability validation.
+          - OpenStreetMap data attribution: © OpenStreetMap contributors, ODbL 1.0.
+
+          The Android app should fetch runtime-manifest.json first, verify both SHA-256 values,
+          validate both SQLite databases, and atomically activate the pair.
+          EOF
+
+          gh release create "$RUNTIME_VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$PIPELINE_COMMIT" \
+            --title "Camera Ninja Runtime $RUNTIME_VERSION" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --latest \
+            "dist/$ROAD_DB_NAME.zst" \
+            "dist/$CAMERA_DB_NAME.zst" \
+            dist/runtime-manifest.json \
+            dist/SHA256SUMS \
+            dist/runtime-validation.json \
+            dist/compact-build.json \
+            dist/compact-validation.json \
+            dist/camera-match-report.json \
+            dist/camera-direction-report.json \
+            dist/camera-fallback-metadata-report.json \
+            dist/camera-reliability-report.json \
+            dist/osm-source-fileinfo.txt \
+            dist/osm-source-sha256.txt
+
+      - name: Verify latest-release manifest endpoint
+        run: |
+          curl -fL --retry 3 \
+            "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/runtime-manifest.json" \
+            -o work/published-runtime-manifest.json
+          python3 - <<'PY'
+          import json, os
+          published=json.load(open('work/published-runtime-manifest.json',encoding='utf-8'))
+          expected=os.environ['RUNTIME_VERSION']
+          if published.get('dataVersion') != expected:
+              raise SystemExit(f"latest manifest mismatch: {published.get('dataVersion')} != {expected}")
+          print(json.dumps({'latestManifest': 'PASS', 'dataVersion': expected}, ensure_ascii=False))
+          PY
